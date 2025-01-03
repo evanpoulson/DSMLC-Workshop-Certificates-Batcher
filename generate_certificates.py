@@ -1,70 +1,79 @@
 import csv
-import argparse
-from pathlib import Path
-from reportlab.pdfgen import canvas
-from PyPDF2 import PdfReader, PdfWriter
+import os
+from pdfrw import PdfReader, PdfWriter
 
-# Define positions for placeholders
-placeholder_positions = {
-    "[PARTICIPANT]": (150, 500),
-    "[WORKSHOP]": (150, 450),
-    "[AREA]": (150, 400),
-    "[DIRECTOR]": (150, 200),
-    "[PRESIDENT]": (350, 200)
-}
-
-def create_overlay(data):
-    overlay_path = "overlay.pdf"
-    c = canvas.Canvas(overlay_path)
-    for key, value in data.items():
-        if key in placeholder_positions:
-            x, y = placeholder_positions[key]
-            c.drawString(x, y, value)
-    c.save()
-    return overlay_path
-
-def merge_pdfs(template_path, overlay_path, output_path):
+def replace_text_in_pdf(template_path, data, output_path):
+    # Read the template PDF
     template_pdf = PdfReader(template_path)
-    overlay_pdf = PdfReader(overlay_path)
-    writer = PdfWriter()
-
     for page in template_pdf.pages:
-        page.merge_page(overlay_pdf.pages[0])
-        writer.add_page(page)
+        # Access the page's content stream
+        if not page.Contents:
+            continue
 
-    with open(output_path, "wb") as output_file:
-        writer.write(output_file)
+        # Handle multiple content streams (list) or single stream
+        content_streams = page.Contents
+        if isinstance(content_streams, list):
+            content = ''.join(obj.stream for obj in content_streams if hasattr(obj, 'stream'))
+        elif hasattr(content_streams, 'stream'):
+            content = content_streams.stream
+        else:
+            continue
+
+        # Ensure content is in string format for replacement
+        if isinstance(content, bytes):
+            content = content.decode("utf-8")
+
+        # Replace placeholders with actual values
+        for key, value in data.items():
+            content = content.replace(key, value)
+
+        # Encode the modified content back to binary
+        if isinstance(page.Contents, list):
+            for obj, updated_content in zip(content_streams, content.splitlines(True)):
+                obj.stream = updated_content.encode("utf-8")
+        elif hasattr(page.Contents, 'stream'):
+            page.Contents.stream = content.encode("utf-8")
+
+    # Save the updated PDF
+    PdfWriter(output_path, trailer=template_pdf).write()
 
 def process_csv(template_path, csv_file, output_dir):
-    Path(output_dir).mkdir(parents=True, exist_ok=True)  # Ensure the output directory exists
+    # Ensure the output directory exists
+    output_dir = os.path.expanduser(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
     with open(csv_file, mode="r") as file:
         reader = csv.DictReader(file)
         for row in reader:
-            participant_name = row["Participant"]
-            output_path = Path(output_dir) / f"{participant_name.replace(' ', '_')}_certificate.pdf"
-
+            # Prepare data for replacement
             data = {
-                "[PARTICIPANT]": row["Participant"],
-                "[WORKSHOP]": row["Workshop"],
-                "[AREA]": row["Area"],
-                "[DIRECTOR]": row["Director"],
-                "[PRESIDENT]": row["President"]
+                "[PARTICIPANT]": row["PARTICIPANT"],
+                "[WORKSHOP]": row["WORKSHOP"],
+                "[AREA]": row["AREA"],
+                "[DIRECTOR]": row["DIRECTOR"],
+                "[PRESIDENT]": row["PRESIDENT"],
             }
 
-            overlay_path = create_overlay(data)
-            merge_pdfs(template_path, overlay_path, str(output_path))
+            # Generate the output file path
+            participant_name = row["PARTICIPANT"].replace(" ", "_")
+            output_path = os.path.join(output_dir, f"{participant_name}.pdf")
+
+            # Replace placeholders and create the certificate
+            replace_text_in_pdf(template_path, data, output_path)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate certificates with placeholders filled.")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate certificates by replacing text in the template.")
     parser.add_argument(
         "template",
         type=str,
-        help="Path to the certificate template (e.g., DSMLC_Workshop_Certificate_DARK.pdf)"
+        help="Path to the certificate template PDF."
     )
     parser.add_argument(
         "csv",
         type=str,
-        help="Path to the CSV file containing the participant data."
+        help="Path to the CSV file containing participant data."
     )
     parser.add_argument(
         "output_dir",
@@ -73,5 +82,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
     process_csv(args.template, args.csv, args.output_dir)
+
+
+
